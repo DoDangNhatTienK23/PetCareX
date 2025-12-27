@@ -199,15 +199,40 @@ END;
 GO
 
 PRINT '8. Insert HANGTHANHVIEN...';
-INSERT INTO HANGTHANHVIEN VALUES (N'Thân thiết', 0.20), (N'Cơ bản', 0);
+INSERT INTO HANGTHANHVIEN VALUES (N'VIP', 0.30), (N'Thân thiết', 0.20), (N'Cơ bản', 0);
 
 GO
 
 -- 9. KHACHHANGTHANHVIEN (Tăng lên 30.000)
 PRINT '9. Insert KHACHHANGTHANHVIEN (30k dòng)...';
 INSERT INTO KHACHHANGTHANHVIEN (MaKhachHang, Email, GioiTinh, NgaySinh, CCCD, TongChiTieu, TenHang, DiaChi)
-SELECT TOP 30000 MaKhachHang, 'user'+CAST(MaKhachHang AS VARCHAR)+'@gmail.com', CASE WHEN RAND()>0.5 THEN 'Nam' ELSE N'Nữ' END, '1995-01-01', RIGHT('000000000000'+CAST(MaKhachHang AS VARCHAR), 12), 10000000, N'Thân thiết', N'TP.HCM'
-FROM KHACHHANG ORDER BY NEWID();
+SELECT 
+    MaKhachHang,
+    'user' + CAST(MaKhachHang AS VARCHAR) + '@gmail.com',
+    CASE WHEN RAND(CHECKSUM(NEWID())) > 0.5 THEN 'Nam' ELSE N'Nữ' END,
+    -- Random ngày sinh (18-60 tuổi)
+    DATEADD(DAY, -CAST(RAND(CHECKSUM(NEWID())) * 15000 + 6500 AS INT), GETDATE()),
+    -- CCCD Random (12 số)
+    RIGHT('000000000000' + CAST(ABS(CHECKSUM(NEWID())) AS VARCHAR) + CAST(ABS(CHECKSUM(NEWID())) AS VARCHAR), 12),
+    
+    -- Cột Tổng chi tiêu và Tên hạng được lấy từ Subquery bên dưới
+    RandomChiTieu,
+    CASE 
+        WHEN RandomChiTieu < 5000000 THEN N'Cơ bản'
+        WHEN RandomChiTieu < 12000000 THEN N'Thân thiết'
+        ELSE N'VIP'
+    END AS TenHang,
+    
+    N'TP.HCM'
+FROM (
+    SELECT TOP 30000 
+        MaKhachHang,
+        -- Random Tổng chi tiêu từ 1.000.000 đến 20.000.000 VNĐ
+        -- Để rải đều khách vào các hạng Cơ bản, Thân thiết và VIP
+        (CAST(ABS(CHECKSUM(NEWID())) % 190 + 10 AS INT) * 100000) AS RandomChiTieu
+    FROM KHACHHANG
+    ORDER BY NEWID()
+) AS DataNguon;
 
 GO
 
@@ -766,65 +791,75 @@ DECLARE @TongTien DECIMAL(18,0);
 DECLARE @SoLuongMon INT;
 DECLARE @MaNV CHAR(5);
 DECLARE @MaKH INT;
-DECLARE @PhanTramGiam DECIMAL(3,2); -- Biến lưu % (VD: 0.20)
+DECLARE @PhanTramGiam DECIMAL(3,2); -- Lưu % giảm (0.00, 0.20, 0.30...)
 
 WHILE @i <= 100000 
 BEGIN
     SET @TongTien = 0;
     
-    -- 1. Random thông tin Header
+    -- 1. Random thông tin cơ bản
+    -- Ngày lập: Trong vòng 3 năm trở lại đây
     SET @NgayLap = DATEADD(HOUR, 8 + CAST(RAND()*13 AS INT), DATEADD(DAY, -CAST(RAND()*1000 AS INT), GETDATE()));
+    -- Nhân viên: Chỉ lấy Tiếp tân (khoảng ID từ 61-110 theo logic nhân viên cũ)
     SET @MaNV = RIGHT('00000' + CAST((CAST(RAND()*50 AS INT) + 61) AS VARCHAR), 5);
+    -- Khách hàng: Random từ 1 đến 80.000
     SET @MaKH = CAST(RAND()*80000 AS INT) + 1;
     
-    -- [LOGIC MỚI]: Tra cứu hạng thành viên để lấy % giảm giá
-    SET @PhanTramGiam = 0; -- Mặc định là 0 (Khách vãng lai)
+    -- [LOGIC QUAN TRỌNG]: Lấy % Giảm giá dựa trên Hạng thành viên hiện tại
+    SET @PhanTramGiam = 0; -- Mặc định là khách vãng lai (0%)
 
-    -- Tìm xem khách này có thẻ thành viên không và hạng gì
     SELECT @PhanTramGiam = H.GiamGia
     FROM KHACHHANGTHANHVIEN K
     JOIN HANGTHANHVIEN H ON K.TenHang = H.TenHang
     WHERE K.MaKhachHang = @MaKH;
 
-    -- Nếu tìm không thấy (NULL) thì gán lại về 0
+    -- Đề phòng trường hợp NULL (khách không có thẻ thành viên)
     IF @PhanTramGiam IS NULL SET @PhanTramGiam = 0;
 
-    -- 2. Insert Hóa đơn (Lưu % giảm giá vào cột GiamGia)
+    -- 2. Tạo Header Hóa đơn (Lưu % giảm giá vào cột GiamGia để đối chiếu sau này)
     INSERT INTO HOADON (NgayLap, GiamGia, TongTien, MaNhanVien, MaKhachHang)
     VALUES (@NgayLap, @PhanTramGiam, 0, @MaNV, @MaKH);
     
     SET @MaHD = SCOPE_IDENTITY();
 
-    -- 3. Insert Chi tiết & Tính tiền hàng
-    SET @SoLuongMon = CAST(RAND()*3 AS INT) + 1; -- Mua 1-3 món
+    -- 3. Tạo Chi tiết Sản phẩm (Mua từ 1-3 món)
+    SET @SoLuongMon = CAST(RAND()*3 AS INT) + 1;
 
     INSERT INTO HOADON_SANPHAM (MaHoaDon, MaSanPham, SoLuong) 
-    SELECT TOP (@SoLuongMon) @MaHD, MaSanPham, CAST(RAND()*5 AS INT) + 1
-    FROM SANPHAM ORDER BY NEWID();
+    SELECT TOP (@SoLuongMon) 
+        @MaHD, 
+        MaSanPham, 
+        CAST(RAND()*5 AS INT) + 1 -- Số lượng mua mỗi món: 1-5 cái
+    FROM SANPHAM 
+    ORDER BY NEWID(); -- Random sản phẩm không trùng lặp
 
-    -- Tính tổng tiền hàng
+    -- Cộng tiền hàng vào Tổng tiền
     SELECT @TongTien = SUM(C.SoLuong * S.GiaTienSanPham)
     FROM HOADON_SANPHAM C 
     JOIN SANPHAM S ON C.MaSanPham = S.MaSanPham
     WHERE C.MaHoaDon = @MaHD;
 
-    -- 4. Xử lý Dịch vụ Y tế (30% xác suất)
+    -- 4. Xử lý Dịch vụ Y tế (30% hóa đơn có sử dụng dịch vụ)
     IF RAND() < 0.3 
     BEGIN
+        -- Random 1 dịch vụ bất kỳ
         INSERT INTO THANHTOANDICHVUYTE (MaHoaDon, MaDichVu) 
         VALUES (@MaHD, (SELECT TOP 1 MaDichVu FROM DICHVUYTE ORDER BY NEWID()));
         
-        SET @TongTien = @TongTien + 200000; -- Cộng tiền dịch vụ giả định
+        -- Cộng thêm chi phí dịch vụ (Giả định trung bình 200k/dịch vụ vì bảng DICHVU không có cột giá)
+        SET @TongTien = @TongTien + 200000; 
     END
 
-    -- 5. [QUAN TRỌNG]: Tính tiền cuối cùng sau khi trừ % giảm giá
-    -- Công thức: Tiền trả = Tổng tiền * (1 - %Giảm)
+    -- 5. CHỐT TỔNG TIỀN (Áp dụng giảm giá VIP/Thân thiết)
+    -- Công thức: Tiền phải trả = Tổng tiền * (1 - %Giảm)
     SET @TongTien = @TongTien * (1.0 - @PhanTramGiam);
 
+    -- Cập nhật lại vào bảng Hóa đơn
     UPDATE HOADON SET TongTien = @TongTien WHERE MaHoaDon = @MaHD;
 
-    -- Log
-    IF @i % 10000 = 0 PRINT N'-> Đã lập ' + CAST(@i AS NVARCHAR) + N' hóa đơn...';
+    -- Log tiến độ (Mỗi 10k dòng báo 1 lần)
+    IF @i % 10000 = 0 PRINT N'-> Đã lập ' + CAST(@i AS NVARCHAR) + N' hóa đơn (Có tính giảm giá VIP)...';
+    
     SET @i = @i + 1;
 END;
 
